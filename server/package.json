@@ -1,0 +1,15 @@
+{
+  "name": "overman-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:start": "node scripts/local-db.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "start": "go run ./cmd/overman",
+    "start:docker": "node scripts/local-api.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "pg": "^8.16.3"
+  }
+}

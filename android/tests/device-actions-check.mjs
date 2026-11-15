@@ -1,0 +1,72 @@
+import {archiveQaSource} from './device-test-session.mjs';
+import {execFileSync} from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import assert from 'node:assert/strict';
+const serial=process.env.OVERMAN_TEST_DEVICE??'emulator-5554',adb=resolve('.tools/android-sdk/platform-tools/adb.exe');
+if(!serial.startsWith('emulator-'))throw Error('Requires the dedicated emulator, never a personal phone.');
+const shell=(...args)=>execFileSync(adb,['-s',serial,'shell',...args],{encoding:'utf8'});
+assert.equal(shell('getprop','ro.boot.qemu.avd_name').trim(),'overman-qa','Only our disposable fixture may be reset.');
+shell('pm','clear','app.overman.sleep');shell('pm','grant','app.overman.sleep','android.permission.POST_NOTIFICATIONS');shell('input','keyevent','224');shell('wm','dismiss-keyguard');shell('am','start','-n','app.overman.sleep/.MainActivity');
+const until=async(fn,label)=>{let last;for(let i=0;i<120;i++){try{if(await fn())return;}catch(e){last=e;}await new Promise(r=>setTimeout(r,100));}throw Error(label+(last?`: ${last.message}`:''));};
+let pid='';await until(()=>{pid=shell('pidof','app.overman.sleep').trim();return !!pid;},'Android process starts');
+execFileSync(adb,['-s',serial,'forward','tcp:9223',`localabstract:webview_devtools_remote_${pid}`]);
+let target;await until(async()=>{try{target=(await(await fetch('http://127.0.0.1:9223/json/list')).json()).find(t=>t.url.includes('appassets'));return !!target;}catch{return false;}},'QA WebView diagnostics available');
+const ws=new WebSocket(target.webSocketDebuggerUrl),requests=new Map();let id=0;
+ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id){const p=requests.get(m.id);requests.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);}};
+await new Promise((res,rej)=>{ws.onopen=res;ws.onerror=rej;});
+const cdp=(method,params={})=>new Promise((resolve,reject)=>{const n=++id;requests.set(n,{resolve,reject});ws.send(JSON.stringify({id:n,method,params}));});
+async function evaluate(expression){const r=await cdp('Runtime.evaluate',{expression:archiveQaSource+';'+expression,returnByValue:true,awaitPromise:true,userGesture:true});if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;}
+const state=()=>evaluate(`JSON.parse(__qaReadArchive('overman.sleep-tower.v1'))`);
+const clickLabel=label=>evaluate(`document.querySelector(${JSON.stringify(`button[aria-label=${JSON.stringify(label)}]`)}).click()`);
+const count=method=>evaluate(`window.__qa.calls.filter(c=>c.method===${JSON.stringify(method)}).length`);
+const pending=method=>evaluate(`window.__qa.pending.filter(c=>c.method===${JSON.stringify(method)}).length`);
+const flush=method=>evaluate(`window.__qa.flush(${JSON.stringify(method)})`);
+const phase=value=>evaluate(`document.querySelector('main')?.getAttribute('data-night-phase')===${JSON.stringify(value)}`);
+const idle=()=>evaluate(`!document.querySelector('main')?.hasAttribute('data-operation')`);
+async function instrument(){
+ await evaluate(`(()=>{const bridge=window.OvermanAndroid,qa=window.__qa={bridge,calls:[],forwarded:[],pending:[]};qa.flush=method=>{const i=qa.pending.findIndex(p=>p.method===method);if(i<0)throw Error('No command '+method);const p=qa.pending.splice(i,1)[0];qa.forwarded.push(p.method);bridge.invoke(p.method,p.body,p.id);};qa.reject=(method,error)=>{const i=qa.pending.findIndex(p=>p.method===method);const p=qa.pending.splice(i,1)[0];window.overmanNativeReply(p.id,null,error);};window.OvermanAndroid={invoke(method,body,id){qa.calls.push({method});if(['start','wake','stop'].includes(method))qa.pending.push({method,body,id});else bridge.invoke(method,body,id);}};})()`);
+}
+await cdp('Page.addScriptToEvaluateOnNewDocument',{source:archiveQaSource});await evaluate(archiveQaSource);
+const checks=[];
+try{
+ await until(()=>evaluate(`!!document.querySelector('button[aria-label="Настройки сна"]')&&!document.body.innerText.includes('Загрузка…')`),'offline interface loads');await clickLabel('Настройки сна');
+ await until(()=>evaluate(`!!document.querySelector('[role=dialog] form')`),'settings open');await evaluate(`document.querySelector('[role=dialog] form').requestSubmit()`);
+ await until(()=>state().then(s=>s?.configured),'schedule saved');await until(idle,'settings complete');await instrument();
+ const floodStart=()=>evaluate(`(()=>{const b=document.querySelector('button[aria-label="Ложусь спать"]');for(let i=0;i<20;i++)b.dispatchEvent(new MouseEvent('click',{bubbles:true}));})()`);
+ await floodStart();await until(()=>pending('start').then(n=>n===1),'one pending start');assert.equal(await count('start'),1);assert.equal((await state()).active,null);assert.equal(await evaluate(`document.querySelector('main').dataset.operation`),'start');
+ writeFileSync('docs/product-evidence/01.02-android-wait.png',execFileSync(adb,['-s',serial,'exec-out','screencap','-p']));
+ // Intentional fault injection before forwarding tests recovery; successful retries use the real Java bridge.
+ await evaluate(`window.__qa.reject('start','Проверочный отказ устройства')`);await until(idle,'failed action unlocks');assert.equal((await state()).active,null);
+ await clickLabel('Ложусь спать');await until(()=>pending('start').then(n=>n===1),'one deliberate retry');
+ for(let i=0;i<12;i++)await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13,autoRepeat:i>0});
+ await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+ assert.equal(await pending('start'),1);assert.equal(await count('start'),2);await flush('start');await until(()=>phase('sleeping'),'native start completes');
+ assert.equal(await evaluate(`window.__qa.forwarded.filter(m=>m==='start').length`),1);
+ checks.push('20 clicks create one start; repeated Enter during pending retry adds no commands; injected failure unlocks; deliberate retry forwards exactly once to real Android');
+ const started=(await state()).active.started;
+ await evaluate(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Нажал случайно'));for(let i=0;i<15;i++)b.dispatchEvent(new MouseEvent('click',{bubbles:true}));})()`);
+ await until(()=>pending('stop').then(n=>n===1),'one cancellation');assert.equal((await state()).active.started,started);await flush('stop');await until(()=>phase('idle'),'cancel completes');assert.equal(await count('stop'),1);
+ checks.push('15 cancel presses forward one stop and keep the night until Android replies');
+ await floodStart();await until(()=>pending('start').then(n=>n===1),'new deliberate start');await flush('start');await until(()=>phase('sleeping'),'new night');
+ await evaluate(`(()=>{const k='overman.sleep-tower.v1',s=JSON.parse(__qaReadArchive(k)),wake=new Date(),bed=new Date(+wake-8*3600000),clock=d=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');s.schedule={bed:clock(bed),wake:clock(wake),hours:8,tolerance:45};const previousSessionId=s.active.id??('legacy-'+s.active.started);s.active={id:crypto.randomUUID(),started:+bed,target:{...s.schedule}};__qaWriteArchive(k,JSON.stringify(s));window.__qa.bridge.invoke('start',JSON.stringify({active:s.active,previousSessionId}),'fixture-session');})()`);
+ await until(async()=>shell('run-as','app.overman.sleep','cat','shared_prefs/overman_device.xml').includes((await state()).active.id),'native fixture session persisted');
+ await cdp('Page.reload',{ignoreCache:true});await until(()=>phase('sleeping'),'fixture restored');await until(idle,'restored state ready');await instrument();
+ const b=await evaluate(`(()=>{const b=document.querySelector('button[aria-label="Удерживать «Проснуться» 3 секунды"]').getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})()`);
+ await cdp('Input.dispatchMouseEvent',{type:'mousePressed',x:b.x,y:b.y,button:'left',clickCount:1});
+ await until(()=>pending('wake').then(n=>n===1),'hold completes once');await cdp('Input.dispatchMouseEvent',{type:'mouseReleased',x:b.x,y:b.y,button:'left',clickCount:1});
+ await evaluate(`(()=>{const b=document.querySelector('button[aria-label="Удерживать «Проснуться» 3 секунды"]');for(let i=0;i<20;i++)b.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);assert.equal(await count('wake'),1);
+ await flush('wake');await until(()=>phase('awaiting_mood'),'native wake synchronized');const captured=(await state()).active;assert.ok(captured.wokeAt);
+ const prefs=shell('run-as','app.overman.sleep','cat','shared_prefs/overman_device.xml');assert.ok(prefs.includes(`name="wokeAt" value="${captured.wokeAt}"`));
+ checks.push('repeated inputs during the held wake send one real native command; native and diary wake timestamps match');
+ await until(()=>evaluate(`!!document.querySelector('[role=dialog] fieldset')`),'morning opens');
+ await evaluate(`(()=>{const buttons=[...document.querySelectorAll('[role=dialog] fieldset button')];buttons.find(b=>b.querySelector('strong')?.textContent==='4').click();})()`);
+ const before=await state();await evaluate(`(()=>{const f=document.querySelector('[role=dialog] form');for(let i=0;i<20;i++)f.requestSubmit();})()`);
+ await until(()=>pending('stop').then(n=>n===1),'save cleanup queued once');const saved=await state();assert.equal(saved.revision,before.revision+1);assert.equal(saved.nights.length,1);assert.equal(saved.nights[0].rested,4);assert.equal(saved.credits.length,1);assert.equal(await count('stop'),1);
+ await flush('stop');await until(()=>evaluate(`!document.querySelector('[role=dialog]')`),'save finishes');await until(idle,'save controls unlocked');assert.equal((await state()).active,null);
+ await new Promise(r=>setTimeout(r,500));
+ writeFileSync('docs/product-evidence/01.02-android-saved.png',execFileSync(adb,['-s',serial,'exec-out','screencap','-p']));
+ checks.push('20 morning submits create one revision, one diary record, one reward, and one cleanup command in the installed APK');
+ writeFileSync('docs/product-evidence/01.02-android-checks.json',JSON.stringify({platform:'Android 15 / API 35 dedicated emulator',nativeCalls:'Successful actions forwarded to real MainActivity Java bridge; start rejection injected before forwarding',checks,night:{started:captured.started,wokeAt:captured.wokeAt,rested:saved.nights[0].rested}},null,2));
+ console.log(JSON.stringify({checks}));
+}finally{ws.close();}

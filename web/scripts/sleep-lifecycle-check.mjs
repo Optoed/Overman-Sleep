@@ -1,0 +1,32 @@
+import {createRequire} from 'node:module';
+import {writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
+import assert from 'node:assert/strict';
+const require=createRequire(import.meta.url),{chromium}=require(process.env.ROOM_PLAYWRIGHT_PACKAGE||'playwright');
+const browser=await chromium.launch({channel:'msedge',headless:true}),key='overman.sleep-tower.v1',checks=[],errors=[];
+const out=resolve('../docs/product-evidence');
+try{
+ const context=await browser.newContext({viewport:{width:390,height:844},timezoneId:'Europe/Moscow',reducedMotion:'reduce',acceptDownloads:true});
+ let page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+ await page.clock.install({time:new Date('2026-11-02T20:00:00Z')});await page.goto('http://127.0.0.1:3000/');
+ await page.getByRole('button',{name:'Настройки сна',exact:true}).click();await page.getByLabel('Ложусь в',{exact:true}).fill('23:00');await page.getByLabel('Встаю в',{exact:true}).fill('07:30');await page.getByRole('button',{name:'Сохранить режим',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ await page.getByRole('button',{name:'Записать прошедшую ночь',exact:true}).click();
+ if(!await page.getByLabel('Лёг в кровать',{exact:true}).isVisible())await page.getByText('Уточнить время и длительность сна',{exact:true}).click();
+ await page.getByLabel('Лёг в кровать',{exact:true}).fill('2026-11-01T23:00');await page.getByLabel('Проснулся',{exact:true}).fill('2026-11-02T07:30');await page.getByLabel('Сколько примерно спал, часов',{exact:true}).fill('8');await page.getByRole('button',{name:'4 Хорошо',exact:true}).click();await page.getByRole('button',{name:'Сохранить ночь',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ const stored=()=>page.evaluate(k=>JSON.parse(localStorage.getItem(k)),key),prior=await stored();assert.equal(prior.nights.length,1);assert.equal(prior.credits.length,1);
+ await page.getByRole('navigation').getByRole('button',{name:'Сон',exact:true}).click();await page.getByRole('button',{name:'Ложусь спать',exact:true}).click();await page.locator('[data-night-phase=sleeping]').waitFor();const active=(await stored()).active;assert.ok(active.id);assert.equal(await page.locator('canvas').count(),0);
+ await page.reload();await page.locator('[data-night-phase=sleeping]').waitFor();assert.deepEqual((await stored()).active,active);
+ checks.push('Real personal storage: schedule and earlier successful night entered through forms; start creates one UUID and reload retains exact session/goal without renderer running');
+ await page.clock.fastForward(8.5*3600000);const hold=page.getByRole('button',{name:'Удерживать «Проснуться» 3 секунды',exact:true});await hold.focus();await page.keyboard.down('Enter');await page.waitForTimeout(700);await page.keyboard.up('Enter');assert.equal((await stored()).active.wokeAt,undefined);
+ await page.keyboard.down('Enter');await page.waitForTimeout(3300);await page.keyboard.up('Enter');await page.getByRole('heading',{name:'Как прошла ночь?',exact:true}).waitFor();const captured=(await stored()).active;assert.ok(captured.wokeAt);assert.equal(captured.id,active.id);
+ await page.getByRole('button',{name:'Закрыть',exact:true}).click();await page.reload();await page.getByRole('heading',{name:'Доброе утро',exact:true}).waitFor();assert.deepEqual((await stored()).active,captured);await page.getByRole('button',{name:'Оценить сон',exact:true}).click();
+ checks.push('Controlled overnight clock with real UI/storage: short hold does not wake; full continuous hold stores first wake; close/reload retains pending morning and exact timestamp');
+ if(!await page.getByLabel('Лёг в кровать',{exact:true}).isVisible())await page.getByText('Уточнить время и длительность сна',{exact:true}).click();
+ await page.getByLabel('Сколько примерно спал, часов',{exact:true}).fill('8');await page.getByRole('button',{name:'4 Хорошо',exact:true}).click();await page.getByLabel('Что повлияло на ночь?',{exact:true}).fill('Сквозная проверка личного дневника.');await page.getByRole('button',{name:'Сохранить ночь',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ const completed=await stored();assert.equal(completed.active,null);assert.equal(completed.nights.length,2);assert.equal(completed.credits.length,2);assert.deepEqual(completed.nights.find(n=>n.date===prior.nights[0].date),prior.nights[0]);assert.deepEqual(completed.world,prior.world);assert.equal(completed.nights[0].sessionId,active.id);assert.equal(completed.nights[0].rested,4);
+ checks.push('Own pending morning commits one record/credit with matching session ID; earlier history, original world and credit retained, active cleared only by its assessment');
+ const time=await page.evaluate(()=>Date.now());await page.close();page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.clock.install({time:new Date(time)});await page.goto('http://127.0.0.1:3000/');await page.locator('[data-night-phase=idle]').waitFor();await page.getByRole('navigation').getByRole('button',{name:'Статистика',exact:true}).click();await page.getByRole('button',{name:'Исправить',exact:true}).waitFor();assert.deepEqual(await stored(),completed);await page.screenshot({path:resolve(out,'01.10-browser-lifecycle.png'),fullPage:true});
+ await page.getByRole('button',{name:'Исправить',exact:true}).click();assert.equal(await page.getByLabel('Что повлияло на ночь?',{exact:true}).inputValue(),'Сквозная проверка личного дневника.');await page.getByRole('button',{name:'Закрыть',exact:true}).click();assert.deepEqual(await stored(),completed);
+ checks.push('Close page and create a fresh page: full archive survives, idle restored, actual history opens saved note without altering either record or reward');
+ assert.deepEqual(errors,[]);await writeFile(resolve(out,'01.10-browser-lifecycle.json'),JSON.stringify({checks,errors,fixture:'Isolated personal localStorage, actual UI forms and keyboard holds; overnight browser clock explicitly controlled, sleep duration manually reported; no native bridge'},null,2));console.log(JSON.stringify({checks,errors}));await context.close();
+}finally{await browser.close();}

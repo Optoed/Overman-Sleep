@@ -1,0 +1,85 @@
+name: overman
+services:
+  postgres:
+    image: postgres:18.7-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: overman
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d overman]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    logging: &logs
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  migrate:
+    image: postgres:18.7-bookworm
+    profiles: [tools]
+    entrypoint: [bash, /scripts/migrate.sh]
+    secrets: [db_password, runtime_password]
+    volumes:
+      - ./migrate.sh:/scripts/migrate.sh:ro
+      - ../../server/db/migrations:/migrations:ro
+    networks: [database]
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    build: ../../server
+    restart: unless-stopped
+    command: [-config, /run/secrets/api_config, -listen, '0.0.0.0:3901', -public-origin, 'https://${OVERMAN_DOMAIN:?Set OVERMAN_DOMAIN}']
+    secrets: [api_config]
+    networks: [database, frontend]
+    depends_on:
+      postgres: {condition: service_healthy}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    healthcheck:
+      test: [CMD, /overman-api, -healthcheck, 'http://127.0.0.1:3901/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *logs
+  web:
+    build: ../../web
+    restart: unless-stopped
+    networks: [frontend]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging: *logs
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment: {OVERMAN_DOMAIN: '${OVERMAN_DOMAIN:?Set OVERMAN_DOMAIN}'}
+    ports: ['80:80', '443:443', '443:443/udp']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../dist/overman-sleep-beta.apk:/srv/releases/overman.apk:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    networks: [frontend]
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
+    logging: *logs
+secrets:
+  db_password: {file: ./secrets/db_password.txt}
+  runtime_password: {file: ./secrets/runtime_password.txt}
+  api_config: {file: ./secrets/api.json}
+volumes:
+  pgdata:
+  caddydata:
+  caddyconfig:
+networks:
+  database: {internal: true}
+  frontend:

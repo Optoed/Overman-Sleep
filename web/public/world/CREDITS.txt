@@ -1,0 +1,17 @@
+Become Overman — environmental assets
+
+Rock Face 03: Poly Haven, https://polyhaven.com/a/rock_face_03
+Medieval Blocks 03: Rob Tuytel / Poly Haven, https://polyhaven.com/a/medieval_blocks_03
+Aerial Grass Rock: Rob Tuytel / Poly Haven, https://polyhaven.com/a/aerial_grass_rock
+Alps Field HDRI: Poly Haven, https://polyhaven.com/a/alps_field
+Poly Haven assets are CC0: https://polyhaven.com/license
+Downloaded 2026-10-07. Original image files; repeated/scaled and color-graded by the renderer.
+
+Terrain Tiles accessed 2026-10-07 from https://registry.opendata.aws/terrain-tiles/
+Mapzen / Tilezen Terrarium elevation tiles, tile URLs listed in terrain-sources.json.
+Europe terrain data produced using Copernicus data and information funded by the
+European Union — EU-DEM layers.
+Global GMTED2010 and SRTM terrain data courtesy of the U.S. Geological Survey.
+Source attribution: https://github.com/tilezen/joerd/blob/master/docs/attribution.md
+Decoded, downsampled, rescaled, lowered at tile edges and repeated around a fictional
+lake for artwork. This is not a geographic map and is not endorsed by data providers.

@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {meditationClock,meditationRemaining} from '../components/sleep/meditation-timer';
+test('elapsed time is based on the actual clock and never finishes early',()=>{const s={started:1000,minutes:5 as const};assert.equal(meditationRemaining(s,1000),300000);assert.equal(meditationRemaining(s,300999),1);assert.equal(meditationRemaining(s,301000),0);assert.equal(meditationRemaining(s,1000000),0);assert.equal(meditationClock(60001),'01:01');});
+test('clock rollback and invalid durations do not grant completion',()=>{assert.throws(()=>meditationRemaining({started:1000,minutes:5},999));assert.throws(()=>meditationRemaining({started:1,minutes:7 as 5},100));});

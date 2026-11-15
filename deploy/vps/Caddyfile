@@ -1,0 +1,30 @@
+{
+ admin off
+}
+{$OVERMAN_DOMAIN} {
+ encode zstd gzip
+ header {
+  Strict-Transport-Security "max-age=31536000"
+  X-Content-Type-Options nosniff
+  Referrer-Policy strict-origin-when-cross-origin
+ }
+ @legacy_api path /api/*
+ handle @legacy_api {
+  respond "Not found" 404
+ }
+ handle /v1/* {
+  reverse_proxy api:3901
+ }
+ handle /health {
+  reverse_proxy api:3901
+ }
+ handle /downloads/overman.apk {
+  root * /srv/releases
+  rewrite * /overman.apk
+  header Content-Type application/vnd.android.package-archive
+  file_server
+ }
+ handle {
+  reverse_proxy web:3000
+ }
+}

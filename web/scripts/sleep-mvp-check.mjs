@@ -1,0 +1,78 @@
+import { createRequire } from 'node:module';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import assert from 'node:assert/strict';
+const require=createRequire(import.meta.url),{chromium}=require(process.env.ROOM_PLAYWRIGHT_PACKAGE||'playwright');
+const out=resolve('../docs/sleep-mvp');await mkdir(out,{recursive:true});
+const browser=await chromium.launch({channel:'msedge',headless:true});const errors=[],checks=[];
+try{
+  const context=await browser.newContext({viewport:{width:390,height:844},timezoneId:'Europe/Moscow',reducedMotion:'reduce'});
+  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+  await page.goto('http://127.0.0.1:3000/?demo=1');await page.getByRole('button',{name:'Ложусь спать',exact:true}).waitFor();
+  const bedtimeBounds=await page.getByRole('button',{name:'Ложусь спать',exact:true}).boundingBox(),navBounds=await page.getByRole('navigation',{name:'Основные разделы'}).boundingBox();
+  assert.ok(bedtimeBounds.y+bedtimeBounds.height<=navBounds.y,'bedtime action is visible above navigation');
+  for(const viewport of [{width:360,height:780},{width:320,height:720}]){
+    await page.setViewportSize(viewport);
+    const action=await page.getByRole('button',{name:'Ложусь спать',exact:true}).boundingBox(),nav=await page.getByRole('navigation',{name:'Основные разделы'}).boundingBox();
+    assert.ok(action.y+action.height<=nav.y,`bedtime action is visible at ${viewport.width}x${viewport.height}`);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  }
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:resolve(out,'01-tracker.png'),fullPage:true});
+  await page.getByRole('button',{name:'Настройки сна',exact:true}).click();
+  await page.getByLabel('Ложусь в',{exact:true}).fill('23:15');await page.getByLabel('Встаю в',{exact:true}).fill('07:30');
+  await page.getByRole('button',{name:'Сохранить режим',exact:true}).click();
+  await page.getByRole('button',{name:'Настройки сна',exact:true}).click();await page.getByRole('button',{name:'Будильник',exact:true}).click();
+  assert.equal(await page.getByLabel('Умное окно пробуждения',{exact:true}).count(),0);assert.equal(await page.getByLabel('Измерять уровень шума',{exact:true}).count(),0);
+  await page.screenshot({path:resolve(out,'02-alarm.png'),fullPage:true});await page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await page.getByRole('button',{name:'Ложусь спать',exact:true}).click();await page.getByRole('heading',{name:'Спокойной ночи'}).waitFor();assert.equal(await page.locator('canvas').count(),0);
+  await page.reload();await page.getByRole('heading',{name:'Спокойной ночи'}).waitFor();const hold=page.getByRole('button',{name:'Удерживать «Проснуться» 3 секунды',exact:true});
+  const hb=await hold.boundingBox();await page.mouse.move(hb.x+hb.width/2,hb.y+hb.height/2);await page.mouse.down();await page.waitForTimeout(800);await page.mouse.up();assert.equal(await page.getByRole('dialog').count(),0);
+  await page.mouse.down();await page.waitForTimeout(3200);await page.mouse.up();await page.getByRole('heading',{name:'Как прошла ночь?',exact:true}).waitFor();
+  const captured=await page.evaluate(()=>JSON.parse(sessionStorage.getItem('overman.sleep-tower.v1.demo')).active.wokeAt);assert.ok(captured);
+  await page.getByRole('button',{name:'Закрыть',exact:true}).click();await page.reload();await page.getByRole('heading',{name:'Доброе утро',exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('overman.sleep-tower.v1.demo')).active.wokeAt),captured);
+  // Isolated demo session: reset the active session only after the hold assertions.
+  await page.evaluate(()=>{const k='overman.sleep-tower.v1.demo',s=JSON.parse(sessionStorage.getItem(k));s.active=null;sessionStorage.setItem(k,JSON.stringify(s));});await page.reload();await page.getByRole('button',{name:'Ложусь спать',exact:true}).waitFor();
+  checks.push('short hold cancels, full 3-second hold opens morning, captured wake persists after reload');
+  // Keyboard and focus interruption use the same three-second confirmation.
+  await page.getByRole('button',{name:'Ложусь спать',exact:true}).click();
+  const keyboardHold=page.getByRole('button',{name:'Удерживать «Проснуться» 3 секунды',exact:true});
+  await keyboardHold.focus();await page.keyboard.down('Space');await page.waitForTimeout(700);await page.keyboard.up('Space');assert.equal(await page.getByRole('dialog').count(),0);
+  await page.keyboard.down('Enter');await page.waitForTimeout(3200);await page.keyboard.up('Enter');await page.getByRole('heading',{name:'Как прошла ночь?',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await page.evaluate(()=>{const k='overman.sleep-tower.v1.demo',s=JSON.parse(sessionStorage.getItem(k));s.active=null;sessionStorage.setItem(k,JSON.stringify(s));});await page.reload();
+  checks.push('keyboard short hold cancels, full Enter hold confirms');
+  checks.push('settings persist, browser smart mode unavailable, active night survives reload, renderer stopped');
+  await page.getByRole('button',{name:'Записать прошедшую ночь',exact:true}).click();
+  await page.getByLabel('Лёг в кровать',{exact:true}).fill('2026-10-31T23:00');await page.getByLabel('Проснулся',{exact:true}).fill('2026-11-01T07:30');
+  await page.getByLabel('Сколько примерно спал, часов',{exact:true}).fill('7.5');
+  await page.getByText('Засыпание и пробуждения · необязательно',{exact:true}).click();
+  await page.getByLabel('Заснул через, минут',{exact:true}).fill('20');await page.getByLabel('Бодрствовал ночью, минут',{exact:true}).fill('40');
+  await page.getByRole('button',{name:'4 Хорошо',exact:true}).click();
+  await page.getByLabel('Что повлияло на ночь?',{exact:true}).fill('Спокойная прогулка перед сном.');await page.getByRole('button',{name:'Сохранить ночь',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+  await page.getByRole('navigation',{name:'Основные разделы'}).getByRole('button',{name:'Статистика',exact:true}).click();
+  await page.getByRole('status').waitFor({state:'hidden'});
+  await page.screenshot({path:resolve(out,'03-journal.png'),fullPage:true});
+  await page.getByRole('button',{name:'Как считается оценка',exact:true}).click();await page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await page.getByRole('button',{name:'Статистика',exact:true}).first().click();await page.getByRole('button',{name:'Месяц',exact:true}).click();
+  await page.screenshot({path:resolve(out,'04-statistics.png'),fullPage:true});
+  await page.getByRole('button',{name:'Заснул',exact:true}).click();await page.getByRole('button',{name:'Бодрствование',exact:true}).click();
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  checks.push('journal correction, latency, awake time, score explanation, calendar-month analytics and no mobile overflow');
+  await page.getByRole('navigation',{name:'Основные разделы'}).getByRole('button',{name:'Башня',exact:true}).click();await page.locator('[data-scene-status="ready"]').waitFor({timeout:60000});
+  await page.screenshot({path:resolve(out,'05-tower.png'),fullPage:true});await page.getByRole('button',{name:/Посмотреть развитие башни/}).click();await page.getByRole('button',{name:'100 этажей',exact:true}).click();await page.getByText('Башня · 100 этажей',{exact:true}).waitFor();
+  await page.getByRole('navigation',{name:'Основные разделы'}).getByRole('button',{name:'Профиль',exact:true}).click();
+  const raw=await page.evaluate(()=>sessionStorage.getItem('overman.sleep-tower.v1.demo'));
+  const backup={format:'overman-sleep',version:1,state:JSON.parse(raw)};
+  await page.getByLabel('Файл резервной копии',{exact:true}).setInputFiles({name:'overman.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(backup))});
+  assert.equal(await page.getByRole('button',{name:'Восстановить записи',exact:true}).isDisabled(),true);
+  await page.getByLabel('Заменить текущую историю этой копией',{exact:true}).check();await page.getByRole('button',{name:'Восстановить записи',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+  assert.notEqual(await page.evaluate(()=>sessionStorage.getItem('overman.sleep-tower.v1.demo.before-import')),null);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('overman.sleep-tower.v1')),null);
+  await page.screenshot({path:resolve(out,'06-profile.png'),fullPage:true});
+  await page.getByLabel('Светлая тема',{exact:true}).check();assert.equal(await page.locator('main').getAttribute('data-theme'),'light');
+  checks.push('tower and 100 floors, restore requires explicit review, previous copy retained, personal storage untouched, theme toggle');
+  await page.setViewportSize({width:1440,height:1000});await page.getByRole('navigation',{name:'Основные разделы'}).getByRole('button',{name:'Сон',exact:true}).click();await page.screenshot({path:resolve(out,'07-desktop.png'),fullPage:true});
+  assert.deepEqual(errors,[]);await writeFile(resolve(out,'checks.json'),JSON.stringify({errors,checks},null,2));console.log(JSON.stringify({errors,checks}));await context.close();
+}finally{await browser.close();}

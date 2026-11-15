@@ -1,0 +1,11 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {shiftSleepWindow,angleDelta} from '../components/sleep/sleep-dial-gesture';
+import {resolvedAppearance} from '../components/sleep/sleep-appearance-cycle';
+import {APPEARANCES,withAppearance} from '../components/sleep/sleep-themes';
+import {freshSleep,parseSleep,clockMinutes} from '../components/sleep/sleep-state';
+import {backupText,readBackup} from '../components/sleep/sleep-insights';
+test('all five-minute shifts retain duration, goal and tolerance across midnight',()=>{const s=freshSleep().schedule;for(let delta=-2880;delta<=2880;delta+=5){const n=shiftSleepWindow(s,delta);assert.equal((clockMinutes(n.wake)-clockMinutes(n.bed)+1440)%1440,510);assert.equal(n.hours,8);assert.equal(n.tolerance,45);}assert.equal(shiftSleepWindow(s,60).bed,'00:00');assert.equal(shiftSleepWindow(s,-60).wake,'06:30');assert.equal(s.bed,'23:00');});
+test('crossing the pointer angle seam cannot create an almost full-day jump',()=>{assert.ok(Math.abs(angleDelta(179*Math.PI/180,-179*Math.PI/180)-2*Math.PI/180)<1e-9);assert.ok(Math.abs(angleDelta(-179*Math.PI/180,179*Math.PI/180)+2*Math.PI/180)<1e-9);});
+const at=(h:number,m=0)=>+new Date(2026,10,11,h,m);
+test('auto is the default, changes at local 07/20, retains selected style and darkens an active night',()=>{for(const t of APPEARANCES){const s=withAppearance(freshSleep(),t.id);for(const h of [0,6,20,23])assert.equal(resolvedAppearance(s,at(h)).mode,'night');for(const h of [7,12,19])assert.equal(resolvedAppearance(s,at(h)).mode,'light');assert.equal(resolvedAppearance(s,at(12)).id,t.id);assert.equal(resolvedAppearance({...s,active:{started:at(6),target:s.schedule}},at(12)).mode,'night');assert.equal(resolvedAppearance(s,at(12),true).mode,'night');assert.equal(s.appearanceMode,undefined);}});
+test('fixed themes never follow the clock; preference and archive survive copy/reload',()=>{for(const t of APPEARANCES){const s={...withAppearance(freshSleep(),t.id),appearanceMode:'fixed' as const};for(const h of [0,8,20])assert.equal(resolvedAppearance(s,at(h)).mode,t.mode);assert.deepEqual(parseSleep(JSON.stringify(s)),s);assert.deepEqual(readBackup(backupText(s)),s);}assert.throws(()=>parseSleep(JSON.stringify({...freshSleep(),appearanceMode:'future'})));});

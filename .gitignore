@@ -1,0 +1,35 @@
+# Local data and credentials
+.tools/
+.captures/
+**/.local/
+**/secrets/
+**/backups/
+**/.env
+**/.env.*
+!**/.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Dependencies and generated files
+**/node_modules/
+**/.next/
+**/.next-check/
+**/.gradle/
+**/build/
+**/__pycache__/
+*.pyc
+*.class
+*.tsbuildinfo
+android/local.properties
+android/app/src/main/assets/
+android/app/src/main/res/raw/*.wav
+.DS_Store
+Thumbs.db
